@@ -49,10 +49,10 @@ Overall the AI was reliable for mechanical work (reading, tracing, running comma
    - Looks up the `Song` and the rating `User` (`rater`), 404-equivalent `ValueError` if either is missing.
    - Checks for an existing `Rating` for this `(user_id, song_id)` pair (there's a unique constraint on that pair in `models.py`) — updates it in place if found, otherwise inserts a new `Rating`.
    - Commits.
-   - **This is where Issue #4 lives**: unlike the sibling function `add_to_playlist()` (a few lines above it in the same file), `rate_song()` never calls `create_notification()`. The song's original sharer is never told their song was rated.
+   - Notably, `rate_song()` does not call `create_notification()` anywhere in its body.
 3. Back in the route, the `Rating` is serialized via `.to_dict()` and returned as `201`.
 
-Contrast with `add_to_playlist()` in the same file, which *does* follow through: it appends the song to the playlist, commits, then — if the adder isn't the original sharer — calls `create_notification(user_id=song.shared_by, notification_type="song_added_to_playlist", body=...)`. `create_notification()` itself is a two-line function: build a `Notification` row, add, commit. This asymmetry (one action-handler calls `create_notification`, the sibling doesn't) is the direct root cause of Issue #4.
+Contrast with `add_to_playlist()` in the same file, which *does* follow through: it appends the song to the playlist, commits, then — if the adder isn't the original sharer — calls `create_notification(user_id=song.shared_by, notification_type="song_added_to_playlist", body=...)`. `create_notification()` itself is a two-line function: build a `Notification` row, add, commit. The two functions are structurally parallel (validate → mutate → commit) but diverge at this last step.
 
 ### Data flow trace: viewing a playlist's songs
 
@@ -60,15 +60,14 @@ Contrast with `add_to_playlist()` in the same file, which *does* follow through:
 
 1. `routes/playlists.py::get_songs()` calls `get_playlist_songs(playlist_id)`.
 2. `services/playlist_service.py::get_playlist_songs()` looks up the `Playlist` (404 if missing), then queries `Song` joined to the `playlist_entries` association table, filtered to this playlist, ordered ascending by `position`.
-3. The query result is converted to dicts via `[song.to_dict() for song in songs[:-1]]` — **the `[:-1]` slice is Issue #5**: it unconditionally drops the last song in position order, regardless of how many songs are in the playlist.
+3. The query result is converted to dicts via `[song.to_dict() for song in songs[:-1]]` — note the `[:-1]` slice, which drops the last element of the (correctly ordered) list before returning it.
 
 ### Patterns noticed
 
 - **Routes never touch the DB directly except `routes/users.py`'s `get_user()`** (a plain `db.session.get`) — everything else funnels through `services/`.
 - **Services communicate errors via `ValueError`**, which every route uniformly converts to a 4xx JSON body. There's no custom exception hierarchy.
 - **`to_dict()` on every model** is the sole serialization boundary — services return already-serialized dicts (or full ORM objects for write endpoints), never raw ORM query results, to the routes.
-- **Association tables with extra columns (`playlist_entries`) are used both via raw `.insert()` (in `seed_data.py`) and via the ORM `secondary=` relationship (`playlist.songs.append(...)` in `notification_service.add_to_playlist`)** — these two approaches aren't equivalent when the table has non-FK columns, which is the source of an additional bug found during reproduction (see below).
-- Every one of the five reported bugs is a small, local logic error (a wrong conditional, a wrong constant, a missing call, a stray slice) rather than an architectural problem — consistent with the README's framing of this as a "bug hunt," not a refactor.
+- **Association tables with extra columns (`playlist_entries`) are used both via raw `.insert()` (in `seed_data.py`) and via the ORM `secondary=` relationship (`playlist.songs.append(...)` in `notification_service.add_to_playlist`)** — these two approaches populate the table differently, which matters because `playlist_entries` has non-FK columns (`position`, `added_by`) that only the raw-insert path sets explicitly.
 
 ---
 
