@@ -1,5 +1,23 @@
 # Mixtape Bug Hunt — Submission
 
+## AI Usage
+
+I used Claude Code (via the IDE) as a pair-programming assistant for essentially the whole project, but in a "drive, don't autopilot" way — I had it do the reading/reproducing/typing, but I made the calls on scope and checked its claims against real output before accepting them.
+
+**Orientation.** Before looking at any issue, I had it read `app.py`, `models.py`, every file in `routes/` and `services/`, and `seed_data.py`, and summarize what each module is responsible for. I also asked it to trace two specific call chains end-to-end — "a user rates a song, from the route down to wherever a notification might get created" and "a user views a playlist's songs, from the route to the DB query" — because I wanted the actual function-by-function path, not just a description of what the feature does. That's what's written up in the Codebase Map section below. This part was straightforward and I didn't have much to double-check — it's just reading code and reporting back accurately, which is a low-risk task for AI to help with.
+
+**Reproducing the bugs.** For each bug, I had it reproduce the reported behavior against the running app and the seeded data *before* touching any code — e.g., hitting `/songs/<id>/rate` and `/users/<id>/notifications` back-to-back to confirm a rating really doesn't produce a notification, or inserting an 8th playlist entry directly into `playlist_entries` to confirm the "always the newest song is missing" behavior darius described. I wanted to see real request/response output, not just "yes this looks like the bug."
+
+**Where the AI's first read was wrong and I had to push back on it.** For Issue #3 (duplicate search results), it initially pointed at the missing `.distinct()` on the `outerjoin` in `search_service.py` as the obvious cause — and it's a real code smell, the raw SQL genuinely returns duplicate rows for a multi-tag song. But when it actually hit the live `/songs/search` endpoint and ran the existing `test_search.py` suite, there were no duplicates at all — every test passed. I made it dig into *why* before accepting either the "it's fixed" or "it's not a bug" conclusion, and it found the real explanation: the installed SQLAlchemy 2.0.51 uses the legacy `Query` API for `db.session.query(...)`, which auto-deduplicates full-entity results by identity even without `.distinct()` — something that isn't obvious from reading the code, only from actually comparing raw SQL row counts against the ORM's `.all()` output. That's a case where I couldn't just take the first explanation at face value; the code-level bug was real but not the live bug in this environment, and I had it swap out Issue #3 for Issue #4 rather than "fixing" something that wasn't actually broken here.
+
+**Root cause write-ups.** After each bug was reproduced and the offending line identified, I had it draft the root-cause-analysis entries below. I checked each one against the actual `pytest` output and curl responses from the reproduction step myself rather than trusting the prose — e.g., confirming `test_streak_increments_on_sunday` really was the one failing test, and that `songs[:-1]` was really the only transformation between the correct query result and the returned list.
+
+**Git cleanup.** After committing, one of my commits ended up bundling three unrelated changes together (the notification fix, the playlist fix, and the submission doc) under a message that only described the notification fix — I hadn't scoped my `git add` carefully. I asked for help splitting it apart without losing anything. It used `git reset --mixed` back to the prior clean commit, re-committed each file separately, and — importantly — showed me `git diff <old-bundled-commit> <new-final-commit>` returning empty before force-pushing, which is how I confirmed no work was actually lost in the split. I made the force-push call myself once I saw that empty diff, since rewriting already-pushed history isn't something I wanted done silently.
+
+Overall the AI was reliable for mechanical work (reading, tracing, running commands, drafting write-ups from confirmed facts) and I had to actually intervene once — Issue #3 — where the first plausible-looking explanation didn't survive contact with the live app.
+
+---
+
 ## 1. Codebase Map
 
 ### Main files
